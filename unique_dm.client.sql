@@ -1,3 +1,5 @@
+-----------------------------------------------------------------------------------------
+-- Подготовка к созданию запросов:
 -- Обнаружение дубликатов в витрине dm.client
 SELECT 
     client_rk,
@@ -15,6 +17,8 @@ ORDER BY
 
 
 
+
+
 -- Подсчет уникальных строк и строк, которые будут удалены
 SELECT 
     COUNT(DISTINCT (client_rk, effective_from_date)) as rows_after_deduplication,
@@ -23,8 +27,8 @@ FROM
     dm.client;
 
 
-
-
+---------------------------------------------------------------------------------------------------------------------------
+-- Тест запросов для видео:
 -- Создаем копии таблицы, чтобы показать работу запросов на видео
 CREATE TABLE dm.client1 AS SELECT * FROM dm.client;
 CREATE TABLE dm.client2 AS SELECT * FROM dm.client;
@@ -32,7 +36,9 @@ CREATE TABLE dm.client2 AS SELECT * FROM dm.client;
 
 
 
--- Запрос для удаления дубликатов из витрины dm.client при доступном чтении из таблицы
+
+
+-- Запрос для удаления дубликатов из витрины dm.client1 при доступном чтении из таблицы
 DO $$
 DECLARE
     v_total_before BIGINT;
@@ -96,7 +102,7 @@ END $$;
 
 
 
--- Запрос для удаления дубликатов из витрины dm.client с полной блокировкой таблицы
+-- Запрос для удаления дубликатов из витрины dm.client2 с полной блокировкой таблицы
 DO $$
 DECLARE
     v_total_before BIGINT;
@@ -155,6 +161,69 @@ EXCEPTION
         RAISE EXCEPTION 'ОШИБКА: %. Все изменения отменены (автоматический ROLLBACK)', SQLERRM;
 END $$;
 
+
+
+
+-----------------------------------------------------------------------------------------------------------
+-- Запросы для поиска и удаления дубликатов в оригинальной таблице:
+-- Запрос для удаления дубликатов из витрины dm.client при доступном чтении из таблицы
+DO $$
+DECLARE
+    v_total_before BIGINT;
+    v_should_remain BIGINT;
+    v_total_after BIGINT;
+    v_unique_after BIGINT;
+    v_deleted_rows BIGINT;
+BEGIN
+    -- Блокировка таблицы (EXCLUSIVE позволяет читать, но не изменять)
+    LOCK TABLE dm.client IN EXCLUSIVE MODE;
+    -- Сбор статистики ДО изменений
+    SELECT
+        COUNT(*),
+        COUNT(DISTINCT (client_rk, effective_from_date)),
+        COUNT(*) - COUNT(DISTINCT (client_rk, effective_from_date))
+    INTO
+        v_total_before,
+        v_should_remain,
+        v_deleted_rows
+    FROM dm.client;
+    RAISE NOTICE 'Статистика до удаления:';
+    RAISE NOTICE '  Всего строк: %', v_total_before;
+    RAISE NOTICE '  Уникальных комбинаций: %', v_should_remain;
+    RAISE NOTICE '  Дубликатов для удаления: %', v_deleted_rows;
+    -- Создаем временную таблицу с уникальными записями
+    CREATE TEMP TABLE temp_unique_clients AS
+    SELECT DISTINCT ON (client_rk, effective_from_date) *
+    FROM dm.client;
+    -- Заменяем данные (используем TRUNCATE + INSERT для атомарности)
+    TRUNCATE dm.client;
+    INSERT INTO dm.client1 SELECT * FROM temp_unique_clients;
+    DROP TABLE temp_unique_clients;
+    -- Проверка результата
+    SELECT
+        COUNT(*),
+        COUNT(DISTINCT (client_rk, effective_from_date))
+    INTO
+        v_total_after,
+        v_unique_after
+    FROM dm.client;
+    RAISE NOTICE 'Результат после удаления:';
+    RAISE NOTICE '  Осталось строк: %', v_total_after;
+    RAISE NOTICE '  Уникальных комбинаций: %', v_unique_after;
+    -- Верификация
+    IF v_total_after != v_should_remain OR v_unique_after != v_should_remain THEN
+        RAISE EXCEPTION 'ОШИБКА ВЕРИФИКАЦИИ: Ожидалось % строк. Получено % строк (уникальных: %)',
+                      v_should_remain, v_total_after, v_unique_after;
+    END IF;
+    RAISE NOTICE 'Операция успешно завершена. Удалено % дубликатов', v_deleted_rows;
+EXCEPTION
+    WHEN OTHERS THEN
+        -- Автоматическая очистка при ошибке
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'temp_unique_clients') THEN
+            DROP TABLE temp_unique_clients;
+        END IF;
+        RAISE EXCEPTION 'ОШИБКА: %. Все изменения отменены (автоматический ROLLBACK)', SQLERRM;
+END $$;
 
 
 
@@ -219,7 +288,3 @@ EXCEPTION
     WHEN OTHERS THEN
         RAISE EXCEPTION 'ОШИБКА: %. Все изменения отменены (автоматический ROLLBACK)', SQLERRM;
 END $$;
-
-
-
-
