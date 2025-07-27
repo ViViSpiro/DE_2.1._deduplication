@@ -197,7 +197,7 @@ BEGIN
     FROM dm.client;
     -- Заменяем данные (используем TRUNCATE + INSERT для атомарности)
     TRUNCATE dm.client;
-    INSERT INTO dm.client1 SELECT * FROM temp_unique_clients;
+    INSERT INTO dm.client SELECT * FROM temp_unique_clients;
     DROP TABLE temp_unique_clients;
     -- Проверка результата
     SELECT
